@@ -1,0 +1,4 @@
+Model,Accuracy,Precision,Recall,F1-Score
+K-Nearest Neighbors (KNN),0.8636,0.8820,0.8636,0.8634
+Support Vector Machine (SVM),0.7727,0.7873,0.7727,0.7702
+Random Forest,0.6364,0.6364,0.6364,0.6341
