@@ -1,6 +1,3 @@
-
-
-
 import os
 import tensorflow as tf
 import numpy as np
@@ -15,319 +12,282 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, \
+    classification_report
 import warnings
+
 warnings.filterwarnings('ignore')
 
 print("All libraries imported successfully!")
 
 #  Dataset Loading Function
-IMAGE_WIDTH=128
-IMAGE_HEIGHT=128
-BATCH_SIZE=32
+IMAGE_WIDTH = 128
+IMAGE_HEIGHT = 128
+BATCH_SIZE = 32
 
-train_ds = tf.keras.utils.image_dataset_from_directory(
-        'dataset\ALF_B',
-        labels='inferred',
-        label_mode='categorical', # or 'binary' for two classes, 'int' for integer labels
-        image_size=(IMAGE_WIDTH, IMAGE_HEIGHT),
-        interpolation='nearest',
-        batch_size=BATCH_SIZE,
-        shuffle=True
-    )
+import os
+import cv2
+import numpy as np
+from skimage.feature import hog
+from skimage import exposure
+from sklearn.preprocessing import StandardScaler
 
-def load_dataset(dataset_path, img_size=(64, 64)):
+
+def preprocess_image(image_path, target_size=(IMAGE_WIDTH, IMAGE_HEIGHT)):
     """
-    Load images from dataset folders
+    Preprocess a single image
     Args:
-        dataset_path: Path to dataset folder containing class subfolders
-        img_size: Target size for resizing images
+        image_path: Path to the image file
+        target_size: Tuple of (width, height) to resize the image to
     Returns:
-        images: List of preprocessed images
-        labels: List of corresponding labels
+        processed_image: Preprocessed image
     """
-    images = []
-    labels = []
+    # 1. Read the image
+    image = cv2.imread(image_path)
 
-   
-    classes = [d for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))]
+    # 2. Resize the image
+    resized = cv2.resize(image, target_size, interpolation=cv2.INTER_AREA)
 
-    print(f"Found {len(classes)} classes: {classes}")
+    # 3. Convert to grayscale
+    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
 
-    for class_name in classes:
-        class_path = os.path.join(dataset_path, class_name)
-        print(f"Loading images from {class_name}...")
+    # 4. Normalize pixel values to [0, 1]
+    normalized = gray / 255.0
 
-        image_count = 0
-        for img_file in os.listdir(class_path):
-            if img_file.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp')):
-                img_path = os.path.join(class_path, img_file)
-                try:
-                   
-                    img = cv2.imread(img_path)
-                    if img is not None:
-                        
-                        img = cv2.resize(img, img_size)
-                        images.append(img)
-                        labels.append(class_name)
-                        image_count += 1
-                except Exception as e:
-                    print(f"Error loading {img_path}: {e}")
+    return normalized
 
-        print(f"  Loaded {image_count} images from {class_name}")
-
-    return np.array(images), np.array(labels)
-
-
-#  Preprocessing Functions
-
-
-def preprocess_images(images):
-    """
-    Preprocess images: convert to grayscale and normalize
-    Args:
-        images: Array of color images
-    Returns:
-        preprocessed: Array of grayscale normalized images
-    """
-    preprocessed = []
-
-    for img in images:
-        
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        normalized = gray / 255.0
-        preprocessed.append(normalized)
-
-    return np.array(preprocessed)
 
 def extract_hog_features(images):
     """
-    Extract HOG (Histogram of Oriented Gradients) features
+    Extract HOG features from a list of images
     Args:
-        images: Array of grayscale images
+        images: List of grayscale images
     Returns:
-        features: Array of HOG feature vectors
+        hog_features: Array of HOG features
     """
-    features = []
-
+    hog_features = []
     for img in images:
-        
-        hog_features = hog(img, orientations=9, pixels_per_cell=(8, 8),
-                          cells_per_block=(2, 2), visualize=False)
-        features.append(hog_features)
+        # Extract HOG features
+        features = hog(img,
+                       orientations=9,
+                       pixels_per_cell=(8, 8),
+                       cells_per_block=(2, 2),
+                       visualize=False)
+        hog_features.append(features)
 
-    return np.array(features)
+    return np.array(hog_features)
+
 
 def extract_pixel_features(images):
     """
     Extract raw pixel values as features
     Args:
-        images: Array of grayscale images
+        images: List of grayscale images
     Returns:
-        features: Flattened pixel values
+        pixel_features: Flattened array of pixel values
     """
-    return images.reshape(len(images), -1)
+    # Reshape each image to 1D array and stack them
+    return np.array([img.flatten() for img in images])
 
 
-#  Training and Evaluation Functions
-
-
-def train_and_evaluate(X_train, X_test, y_train, y_test, model, model_name):
+def load_and_preprocess_dataset(dataset_path, feature_type='hog'):
     """
-    Train a model and evaluate its performance
+    Load and preprocess all images in the dataset
     Args:
-        X_train, X_test: Training and testing features
-        y_train, y_test: Training and testing labels
-        model: Machine learning model to train
-        model_name: Name of the model for display
+        dataset_path: Path to the dataset directory
+        feature_type: Type of features to extract ('hog' or 'pixel')
     Returns:
-        results: Dictionary containing evaluation metrics
+        X: Extracted features
+        y: Binary labels (1 for ALF_B, 0 for others)
+        class_names: List of class names
     """
-    print(f"\nTraining {model_name}...")
+    images = []
+    labels = []
 
-  
-    model.fit(X_train, y_train)
+    # Get list of classes (subdirectories)
+    class_names = sorted([d for d in os.listdir(dataset_path)
+                          if os.path.isdir(os.path.join(dataset_path, d))])
 
-   
-    y_pred = model.predict(X_test)
+    # Process each class
+    for class_name in class_names:
+        class_path = os.path.join(dataset_path, class_name)
 
-    
-    accuracy = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-    recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
-    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
-    cm = confusion_matrix(y_test, y_pred)
+        for img_file in os.listdir(class_path):
+            if img_file.lower().endswith(('.png', '.jpg', '.jpeg')):
+                img_path = os.path.join(class_path, img_file)
 
-    print(f"{model_name} - Accuracy: {accuracy:.4f}")
+                # Preprocess the image
+                processed_img = preprocess_image(img_path, (IMAGE_WIDTH, IMAGE_HEIGHT))
 
-    results = {
-        'model_name': model_name,
-        'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1,
-        'confusion_matrix': cm,
-        'y_pred': y_pred,
-        'model': model
+                # Add to our lists
+                images.append(processed_img)
+                # Binary label: 1 for ALF_B, 0 for others
+                labels.append(1 if class_name == 'ALF_B' else 0)
+
+    # Convert to numpy arrays
+    images = np.array(images)
+    labels = np.array(labels)
+
+    # Extract features based on the specified method
+    if feature_type.lower() == 'hog':
+        X = extract_hog_features(images)
+    else:  # Default to pixel features
+        X = extract_pixel_features(images)
+
+    return X, labels, ['Not ALF_B', 'ALF_B']  # Binary class names
+
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+
+def train_and_evaluate_models(X, y, class_names, test_size=0.2, random_state=42):
+    """
+    Train and evaluate multiple ML models for binary classification
+
+    Args:
+        X: Feature matrix
+        y: Binary target labels (0 or 1)
+        class_names: List of class names ['Not ALF_B', 'ALF_B']
+        test_size: Proportion of test set (default: 0.2)
+        random_state: Random seed for reproducibility
+
+    Returns:
+        Dictionary containing trained models and their metrics
+    """
+    # Split the data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y
+    )
+
+    print(f"\nSplitting dataset into training ({1 - test_size:.0%}) and testing ({test_size:.0%}) sets")
+    print(f"Training samples: {len(X_train)} (ALF_B: {sum(y_train)}, Not ALF_B: {len(y_train) - sum(y_train)})")
+    print(f"Testing samples: {len(X_test)} (ALF_B: {sum(y_test)}, Not ALF_B: {len(y_test) - sum(y_test)})")
+
+    # Initialize models with balanced class weights
+    models = {
+        'K-Nearest Neighbors': KNeighborsClassifier(n_neighbors=5),
+        'Support Vector Machine': SVC(kernel='rbf', C=1.0, gamma='scale', probability=True, class_weight='balanced'),
+        'Random Forest': RandomForestClassifier(n_estimators=100, random_state=random_state, class_weight='balanced')
     }
 
+    results = {}
+
+    # Train and evaluate each model
+    for name, model in models.items():
+        print(f"\n{'=' * 50}")
+        print(f"Training {name}...")
+
+        # Train model
+        model.fit(X_train, y_train)
+
+        # Make predictions
+        y_pred = model.predict(X_test)
+        y_prob = model.predict_proba(X_test)[:, 1]  # Probability of positive class (ALF_B)
+
+        # Calculate metrics
+        accuracy = accuracy_score(y_test, y_pred)
+        precision = precision_score(y_test, y_pred, zero_division=0)
+        recall = recall_score(y_test, y_pred, zero_division=0)
+        f1 = f1_score(y_test, y_pred, zero_division=0)
+
+        # Store results
+        results[name] = {
+            'model': model,
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'y_pred': y_pred,
+            'y_prob': y_prob
+        }
+
+        # Print results
+        print(f"\n{name} Results:")
+        print(f"Accuracy: {accuracy:.4f}")
+        print(f"Precision: {precision:.4f}")
+        print(f"Recall:    {recall:.4f}")
+        print(f"F1-Score:  {f1:.4f}")
+
+        # Plot confusion matrix
+        cm = confusion_matrix(y_test, y_pred)
+        plt.figure(figsize=(6, 5))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                    xticklabels=class_names,
+                    yticklabels=class_names)
+        plt.title(f'Confusion Matrix - {name}')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.tight_layout()
+        plt.savefig(f'confusion_matrix_{name.lower().replace(" ", "_")}.png', dpi=300)
+        plt.close()
+        print(f"Confusion matrix saved as 'confusion_matrix_{name.lower().replace(' ', '_')}.png'")
+
     return results
-
-def plot_confusion_matrix(cm, classes, model_name):
-    """
-    Plot confusion matrix as heatmap
-    """
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
-    plt.title(f'Confusion Matrix - {model_name}')
-    plt.ylabel('True Label')
-    plt.xlabel('Predicted Label')
-    plt.tight_layout()
-    plt.savefig(f'confusion_matrix_{model_name.replace(" ", "_")}.png', dpi=300, bbox_inches='tight')
-    plt.close()
-    print(f"Confusion matrix saved for {model_name}")
-
-
-# Main Workflow
 
 
 def main():
     """
     Main function to run the complete workflow
     """
-    print("="*60)
-    print("Kurdish Alphabet Image Classification Project")
-    print("="*60)
+    # 1. Set your dataset path
+    DATASET_PATH = 'dataset'
 
+    # 2. Load and preprocess the dataset
+    print("=" * 50)
+    print("Kurdish Alphabet Classification - ML Models")
+    print("=" * 50)
 
-    DATASET_PATH = 'dataset'  
-    IMG_SIZE = (64, 64)
-    FEATURE_TYPE = 'hog'  
-    TEST_SIZE = 0.2
-    RANDOM_STATE = 42
+    print("\nLoading and preprocessing dataset...")
 
-    # Check if dataset exists
-    if not os.path.exists(DATASET_PATH):
-        print(f"\nERROR: Dataset path '{DATASET_PATH}' not found!")
-        print("\nPlease create the dataset structure:")
-        print("dataset/")
-        print("  ├── Alf_E/  (25 images of Kurdish letter ئ)")
-        print("  ├── Alf_B/  (25 images of Kurdish letter ب)")
-        print("  ├── Alf_J/  (25 images of Kurdish letter ج)")
-        print("  └── Alf_R/  (25 images of Kurdish letter ڕ)")
-        return
+    # Try with HOG features first
+    try:
+        X, y, class_names = load_and_preprocess_dataset(DATASET_PATH, feature_type='hog')
+        feature_type = 'hog'
+    except Exception as e:
+        print(f"Error with HOG features: {e}")
+        print("Falling back to pixel features...")
+        X, y, class_names = load_and_preprocess_dataset(DATASET_PATH, feature_type='pixel')
+        feature_type = 'pixel'
 
+    # 3. Print dataset information
+    print(f"\nDataset loaded successfully!")
+    print(f"Feature type: {feature_type.upper()}")
+    print(f"Number of samples: {X.shape[0]}")
+    print(f"Number of features: {X.shape[1]}")
+    print(f"Number of classes: {len(class_names)}")
+    print(f"Class names: {class_names}")
 
-    print("\n" + "="*60)
-    print("STEP 1: Loading Dataset")
-    print("="*60)
-    images, labels = load_dataset(DATASET_PATH, img_size=IMG_SIZE)
-    print(f"\nTotal images loaded: {len(images)}")
-    print(f"Image shape: {images[0].shape}")
-    print(f"Unique classes: {np.unique(labels)}")
+    # 4. Train and evaluate models
+    print("\n" + "=" * 50)
+    print("Training Machine Learning Models")
+    print("=" * 50)
 
-    
-    print("\n" + "="*60)
-    print("STEP 2: Preprocessing Images")
-    print("="*60)
-    preprocessed_images = preprocess_images(images)
-    print(f"Preprocessed images shape: {preprocessed_images.shape}")
+    results = train_and_evaluate_models(X, y, class_names)
 
- 
-    print("\n" + "="*60)
-    print("STEP 3: Feature Extraction")
-    print("="*60)
-    if FEATURE_TYPE == 'hog':
-        print("Extracting HOG features...")
-        features = extract_hog_features(preprocessed_images)
-    else:
-        print("Using pixel values as features...")
-        features = extract_pixel_features(preprocessed_images)
+    # 5. Print final comparison
+    print("\n" + "=" * 50)
+    print("Model Comparison")
+    print("=" * 50)
 
-    print(f"Feature shape: {features.shape}")
-
-    label_encoder = LabelEncoder()
-    encoded_labels = label_encoder.fit_transform(labels)
-
-   
-    print("\n" + "="*60)
-    print("STEP 4: Splitting Dataset")
-    print("="*60)
-    X_train, X_test, y_train, y_test = train_test_split(
-        features, encoded_labels, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=encoded_labels
-    )
-    print(f"Training samples: {len(X_train)}")
-    print(f"Testing samples: {len(X_test)}")
-
-    
-    print("\n" + "="*60)
-    print("STEP 5: Training Machine Learning Models")
-    print("="*60)
-
-    models = [
-        (KNeighborsClassifier(n_neighbors=5), "K-Nearest Neighbors (KNN)"),
-        (SVC(kernel='rbf', C=1.0, gamma='scale'), "Support Vector Machine (SVM)"),
-        (RandomForestClassifier(n_estimators=100, random_state=RANDOM_STATE), "Random Forest")
-    ]
-
-    results = []
-    for model, name in models:
-        result = train_and_evaluate(X_train, X_test, y_train, y_test, model, name)
-        results.append(result)
-
-
-    print("\n" + "="*60)
-    print("STEP 6: Model Comparison")
-    print("="*60)
-
-    
-    comparison_data = []
-    for result in results:
-        comparison_data.append({
-            'Model': result['model_name'],
+    comparison = []
+    for name, result in results.items():
+        comparison.append({
+            'Model': name,
             'Accuracy': f"{result['accuracy']:.4f}",
-            'Precision': f"{result['precision']:.4f}",
-            'Recall': f"{result['recall']:.4f}",
-            'F1-Score': f"{result['f1_score']:.4f}"
+            'Features': feature_type.upper()
         })
 
-    comparison_df = pd.DataFrame(comparison_data)
-    print("\n" + comparison_df.to_string(index=False))
+    print("\nPerformance Summary:")
+    print(pd.DataFrame(comparison).to_string(index=False))
 
-   
-    comparison_df.to_csv('model_comparison.csv', index=False)
-    print("\nComparison table saved to 'model_comparison.csv'")
-
-
-    print("\n" + "="*60)
-    print("STEP 7: Generating Confusion Matrices")
-    print("="*60)
-
-    class_names = label_encoder.classes_
-    for result in results:
-        plot_confusion_matrix(result['confusion_matrix'], class_names, result['model_name'])
-
-   
-    print("\n" + "="*60)
-    print("STEP 8: Best Model Analysis")
-    print("="*60)
-
-    best_result = max(results, key=lambda x: x['accuracy'])
-    print(f"\nBest Performing Model: {best_result['model_name']}")
-    print(f"Accuracy: {best_result['accuracy']:.4f}")
-    print(f"Precision: {best_result['precision']:.4f}")
-    print(f"Recall: {best_result['recall']:.4f}")
-    print(f"F1-Score: {best_result['f1_score']:.4f}")
-
-    print("\n" + "="*60)
-    print("Project Completed Successfully!")
-    print("="*60)
-    print("\nGenerated files:")
-    print("  - model_comparison.csv")
-    print("  - confusion_matrix_K-Nearest_Neighbors_(KNN).png")
-    print("  - confusion_matrix_Support_Vector_Machine_(SVM).png")
-    print("  - confusion_matrix_Random_Forest.png")
+    print("\nTraining completed! Check the saved confusion matrices for detailed performance.")
 
 
 if __name__ == "__main__":
